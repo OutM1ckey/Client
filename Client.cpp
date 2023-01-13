@@ -1,6 +1,6 @@
 ﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS //ubsługa warningów winsoc
 #define _CRT_SECURE_NO_WARNINGS //ubsługa warningów pliki
-#include <stdio.h> 
+#include <stdio.h>
 #include <winsock2.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -12,7 +12,7 @@ void ShowCerts(SSL* ssl) //wyswietlanie certyfikatów
 {
 	X509* cert;
 	char* line;
-	cert = SSL_get_peer_certificate(ssl); // prosi o komunikat z certyfikatem serweru 
+	cert = SSL_get_peer_certificate(ssl); // prosi o komunikat z certyfikatem serweru
 	if (cert != NULL)
 	{
 		printf("Server certificates:\n");
@@ -22,7 +22,7 @@ void ShowCerts(SSL* ssl) //wyswietlanie certyfikatów
 		line = X509_NAME_oneline(X509_get_issuer_name(cert), 0, 0);
 		printf("Issuer: %s\n", line);
 		free(line);       /* free the malloc'ed string */
-		X509_free(cert);     // czysci pamiec certyfikatu
+		X509_free(cert); // czysci pamiec certyfikatu
 	}
 	else
 		printf("Info: No client certificates configured.\n");
@@ -31,8 +31,14 @@ void ShowCerts(SSL* ssl) //wyswietlanie certyfikatów
 
 int main()
 {
-	// Inicjalizacja Winsock
 	WSADATA wsa_data;
+	SSL_CTX* ctx; 
+	SSL* ssl;
+	// Gniazdo
+	SOCKET sock;
+	// Struktura z informacjami o adresie serwera
+	struct sockaddr_in server_addr;
+	// Inicjalizacja Winsock
 	if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0)
 	{
 		printf("WSAStartup failed.\n");
@@ -43,10 +49,10 @@ int main()
 	SSL_library_init();
 	OpenSSL_add_all_algorithms();
 	SSL_load_error_strings();
-	
+
 
 	// Tworzenie gniazda
-	SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (sock == INVALID_SOCKET)
 	{
 		printf("socket failed.\n");
@@ -54,10 +60,8 @@ int main()
 		return 1;
 	}
 
-	// Struktura z informacjami o adresie serwera
-	struct sockaddr_in server_addr;
 	server_addr.sin_family = AF_INET;
-	server_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); 
+	server_addr.sin_addr.s_addr = inet_addr(SERVER);
 	server_addr.sin_port = htons(PORT);
 
 	// Łączenie z serwerem
@@ -67,11 +71,11 @@ int main()
 		closesocket(sock);
 		WSACleanup();
 		return 1;
-	}	
-	
-	SSL_CTX* ssl_ctx = SSL_CTX_new(TLS_client_method()); //tworzenie contextu ssl, metoda tls
+	}
 
-	if (!ssl_ctx)
+	 ctx = SSL_CTX_new(TLS_client_method()); //tworzenie contextu ssl, metoda tls
+
+	if (!ctx)
 	{
 		printf("SSL_CTX_new failed.\n");
 		closesocket(sock);
@@ -80,41 +84,61 @@ int main()
 	}
 
 	// Wczytanie certyfikatu
-	if (!SSL_CTX_use_certificate_file(ssl_ctx, "client.crt", SSL_FILETYPE_PEM))
+	if (!SSL_CTX_use_certificate_file(ctx, "client.crt", SSL_FILETYPE_PEM))
 	{
 		printf("Could not load certificate.\n");
+		SSL_CTX_free(ctx);
+		closesocket(sock);
+		WSACleanup();
 		return 1;
 	}
 
 	// Wczytanie klucza prywatnego
-	if (!SSL_CTX_use_PrivateKey_file(ssl_ctx, "client.key", SSL_FILETYPE_PEM))
+	if (!SSL_CTX_use_PrivateKey_file(ctx, "client.key", SSL_FILETYPE_PEM))
 	{
 		printf("Could not load private key.\n");
+		SSL_CTX_free(ctx);
+		closesocket(sock);
+		WSACleanup();
 		return 1;
 	}
 
 	//sprawdzenie czy pasuje/jest odpowiedni klucz do certyfikatu
-	if (!SSL_CTX_check_private_key(ssl_ctx)) {
+	if (!SSL_CTX_check_private_key(ctx)) {
 		printf("Private key does not match the certificate");
+		SSL_CTX_free(ctx);
+		closesocket(sock);
+		WSACleanup();
 		return 1;
 	}
 
 	// Tworzenie struktury SSL dla połączenia
-	SSL* ssl = SSL_new(ssl_ctx);
+	ssl = SSL_new(ctx);
 	if (!ssl)
 	{
 		printf("SSL_new failed.\n");
+		SSL_CTX_free(ctx);
+		closesocket(sock);
+		WSACleanup();
 		return 1;
 	}
 	// Przypisanie gniazda do struktury SSL
-	SSL_set_fd(ssl, sock);
+	if (!SSL_set_fd(ssl, sock)) {
+		printf("SSL_set_fd failed.\n");
+		SSL_CTX_free(ctx);
+		SSL_free(ssl);
+		closesocket(sock);
+		WSACleanup();
+		return 1;
+	}
+
 	int ret;
-	// Nawiązywanie połączenia SSL (w sesji)
+	// Nawiązywanie połączenia SSL
 	if (ret = SSL_connect(ssl) != 1)
 	{
-		printf("SSL_connect failed.Error %d\n",SSL_get_error(ssl,ret));
+		printf("SSL_connect failed.Error %d\n", SSL_get_error(ssl, ret));
 		SSL_free(ssl);
-		SSL_CTX_free(ssl_ctx);
+		SSL_CTX_free(ctx);
 		closesocket(sock);
 		WSACleanup();
 		return 1;
@@ -124,25 +148,14 @@ int main()
 
 	// Wysyłanie certyfikatu klienta
 	char buffer[1025];
-	if (SSL_write(ssl, buffer, sizeof(buffer)) <= 0)
-	{
-		printf("SSL_write failed.\n");
-		SSL_shutdown(ssl);
-		SSL_free(ssl);
-		SSL_CTX_free(ssl_ctx);
-		closesocket(sock);
-		WSACleanup();
-		return 1;
-	}
-
 	// Pętla obsługi komend
 	while (1)
 	{
 		// Wczytywanie komendy od użytkownika
 		printf("Enter command: ");
-		fgets(buffer, sizeof(buffer), stdin); //wczytywanie z klawiatury
-		
-		if (buffer[0] == '\n') //wczytywanie enter/ wychodz z petli
+		fgets(buffer, sizeof(buffer), stdin);
+
+		if (buffer[0] == '\n')
 			break;
 
 		// Obsługa komendy 'send'
@@ -151,8 +164,7 @@ int main()
 			FILE* file = fopen("plik.txt", "rb");
 			if (file == NULL) {
 				perror("Nie udało się otworzyć pliku");
-				exit(1);
-				//break;
+				break;
 			}
 
 			// Wysyłanie komendy do serwera
@@ -167,7 +179,12 @@ int main()
 				int bytes_sent = SSL_write(ssl, buffer, n); //wysyła plik na serwer
 				if (bytes_sent < 0) { //czy bład podczas wysyłania
 					perror("Błąd przy wysyłaniu pliku");
-					exit(1);
+					fclose(file);
+					SSL_CTX_free(ctx);
+					SSL_free(ssl);
+					closesocket(sock);
+					WSACleanup();
+					return 1;
 				}
 			}
 			SSL_write(ssl, "END_OF_FILE", 11); //informacja o końcu pliku
@@ -181,23 +198,51 @@ int main()
 				printf("SSL_write failed.\n");
 				break;
 			}
+
+			//wczytywanie wiadomości do pliku
+			FILE* file = fopen("plik_z_serwera.txt", "w");
+			if (file == NULL) {
+				perror("Nie udało się otworzyć pliku");
+				break;
+			}
+
 			while (1) {
-				int size = SSL_read(ssl, buffer, sizeof(buffer)-1);
+
+				int size = SSL_read(ssl, buffer, sizeof(buffer) - 1);
 				// Odbieranie danych od serwera
 				if (size <= 0)
 				{
+					fclose(file);
 					break;
 				}
 				// Sprawdzanie, czy otrzymano znak konca wysylania danych
 				if (strncmp(buffer, "END_OF_FILE", 11) == 0) //sprawdza zakonczenie przesylania
 				{
+					fclose(file);
 					break;
 				}
-				buffer[size] = '\0'; //znak konca stringu
-				printf("%s", buffer); // wypisywanie na ekranie
+
+				buffer[size] = '\0'; 
+				if (fwrite(buffer, 1, size, file) != size) {
+					perror("Nie udało się zapisać danych do pliku");
+					SSL_CTX_free(ctx);
+					SSL_free(ssl);
+					closesocket(sock);
+					WSACleanup();
+					return 1;
+				}
 			}
 			printf("\n");
-			
+		}
+		else {
+			char* ptr = strchr(buffer, '\0');
+			int index = ptr - buffer;
+
+			int bytes_sent = SSL_write(ssl, buffer, index);
+			if (bytes_sent < 0) {
+				perror("Błąd wysyłania komendy");
+				break;
+			}
 		}
 	}
 	// Zakończenie połączenia SSL
@@ -205,7 +250,7 @@ int main()
 
 	// Zwalnianie zasobów
 	SSL_free(ssl);
-	SSL_CTX_free(ssl_ctx);
+	SSL_CTX_free(ctx);
 	closesocket(sock);
 
 	// Zakończenie pracy Winsock
@@ -213,3 +258,4 @@ int main()
 
 	return 0;
 }
+
